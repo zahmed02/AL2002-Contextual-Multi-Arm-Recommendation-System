@@ -1,7 +1,7 @@
 # Contextual Multi‑Arm Recommendation System
 
-**Course:** AL2002 Artificial Intelligence Lab  
-**Instructor:** Sir Abdullah Shaikh
+## Course: AL2002 Artificial Intelligence Lab
+## Instructor: Sir Abdullah Shaikh
 
 ## Overview
 
