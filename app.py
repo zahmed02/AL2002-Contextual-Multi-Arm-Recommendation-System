@@ -1,496 +1,329 @@
-import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
 from pathlib import Path
-import sys
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-from matplotlib.patches import FancyBboxPatch
-import matplotlib.colors as mcolors
-import base64
+from flask import Flask, request, jsonify, render_template_string
+from src.product_graph import build_category_graph
+from src.astar_product import a_star_product
+from src.clustering import ClusterAssigner
+from src.preprocess import get_context_vector
+from src.knn_recommender import KNNRecommender
+from src.rf_predictor import PurchasePredictor
+from src.contextual_bandit import LinUCB
 
-# Add src to path so we can import custom modules
-sys.path.append("src")
+app = Flask(__name__)
 
-from product_graph import build_category_graph
-from astar_product import a_star_product
-from clustering import ClusterAssigner
-from rf_predictor import PurchasePredictor
-from knn_recommender import KNNRecommender
-from contextual_bandit import LinUCB
-from preprocess import get_context_vector
+BASE_DIR = Path(__file__).parent
+DATA_RAW = BASE_DIR / "data/raw"
+DATA_PROCESSED = BASE_DIR / "data/processed"
+MODELS_DIR = BASE_DIR / "models"
 
-# -------------------------------------------------------------------
-# Page configuration
-# -------------------------------------------------------------------
-st.set_page_config(
-    page_title="E‑commerce Intelligence System",
-    layout="wide",
-    page_icon="🛒",
-    initial_sidebar_state="collapsed",
-)
+# ------------------------------------------------------------
+# Load product graph and dummy heuristic (A*)
+# ------------------------------------------------------------
+parent_of, children_of, _ = build_category_graph(DATA_RAW)
+def dummy_heuristic(a, b):
+    return 0   # uniform cost – actual A* still finds shortest path
 
-# -------------------------------------------------------------------
-# Load custom CSS
-# -------------------------------------------------------------------
-def load_css():
-    css_file = Path("assets/styles.css")
-    if css_file.exists():
-        with open(css_file, "r") as f:
-            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
-    else:
-        st.warning("CSS file not found. Using default theme.")
+# ------------------------------------------------------------
+# Load models and scalers
+# ------------------------------------------------------------
+rf_predictor = PurchasePredictor(model_dir=MODELS_DIR)
+cluster_assigner = ClusterAssigner(model_dir=MODELS_DIR)
+scaler_context = joblib.load(MODELS_DIR / "scaler_context.pkl")
+bandit = LinUCB.load(model_dir=MODELS_DIR)
 
-load_css()
+# KNN recommender – we'll extend it to return similarity scores
+knn_recommender = KNNRecommender(model_dir=MODELS_DIR)
 
-# -------------------------------------------------------------------
-# Cache data loading (unchanged)
-# -------------------------------------------------------------------
-@st.cache_resource
-def load_all():
-    RAW_DIR = Path("data/raw")
-    PROC_DIR = Path("data/processed")
-    MODEL_DIR = Path("models")
+NUMERIC_FEATURES = ['num_views', 'num_addtocart', 'unique_items',
+                    'categories_viewed', 'duration_min']
+CLUSTER_FEATURES = NUMERIC_FEATURES + ['num_transactions']
 
-    parent_of, children_of, roots = build_category_graph(RAW_DIR)
+# ------------------------------------------------------------
+# Load existing sessions (features + cluster)
+# ------------------------------------------------------------
+existing_sessions = pd.read_parquet(DATA_PROCESSED / "user_sessions.parquet",
+                                    columns=['visitorid', 'session_id', 'start_time',
+                                             *NUMERIC_FEATURES, 'num_transactions'])
+try:
+    cluster_df = pd.read_parquet(DATA_PROCESSED / "user_clusters.parquet")
+except:
+    cluster_df = pd.read_csv(DATA_PROCESSED / "user_clusters.csv")
+existing_sessions = existing_sessions.merge(cluster_df, on=['visitorid', 'session_id'], how='left')
+existing_sessions['cluster'] = existing_sessions['cluster'].fillna(0).astype(int)
+existing_sessions['visitorid'] = existing_sessions['visitorid'].astype(int)
+existing_sessions['session_id'] = existing_sessions['session_id'].astype(int)
 
+# ------------------------------------------------------------
+# Build session → last item map (for KNN)
+# ------------------------------------------------------------
+events_df = pd.read_parquet(DATA_PROCESSED / "events_with_sessions.parquet",
+                            columns=['visitorid', 'session_id', 'itemid', 'timestamp'])
+events_df['visitorid'] = events_df['visitorid'].astype(int)
+events_df['session_id'] = events_df['session_id'].astype(int)
+valid_sessions = existing_sessions[['visitorid', 'session_id']].drop_duplicates()
+events_df = events_df.merge(valid_sessions, on=['visitorid', 'session_id'], how='inner')
+last_items = events_df.sort_values('timestamp').groupby(['visitorid', 'session_id']).last().reset_index()
+session_last_item = {
+    (row['visitorid'], row['session_id']): row['itemid']
+    for _, row in last_items.iterrows()
+}
+print(f"Loaded {len(session_last_item)} sessions with last item.")
+
+# ------------------------------------------------------------
+# Build global popularity (for new sessions)
+# ------------------------------------------------------------
+item_popularity = events_df['itemid'].value_counts()
+most_popular_item = int(item_popularity.index[0]) if not item_popularity.empty else 1000
+
+# ------------------------------------------------------------
+# Helper: bandit context from session row
+# ------------------------------------------------------------
+def build_bandit_context(session_row):
+    return get_context_vector(session_row, scaler_context, NUMERIC_FEATURES)
+
+# ------------------------------------------------------------
+def get_knn_recommendation(last_item):
+    """Return (item_id, similarity_score) or (None, 0) if fails."""
+    recs = knn_recommender.recommend([last_item], top_n=1)
+    if not recs:
+        return None, 0.0
+    rec_item = recs[0]
+    # Get similarity from the precomputed matrix
+    if rec_item in knn_recommender.sim_df.columns and last_item in knn_recommender.sim_df.index:
+        sim = knn_recommender.sim_df.loc[last_item, rec_item]
+        return rec_item, float(sim)
+    return rec_item, 0.0
+
+# ------------------------------------------------------------
+# API endpoints
+# ------------------------------------------------------------
+@app.route('/api/pathfinder', methods=['POST'])
+def api_pathfinder():
+    data = request.get_json()
+    start = int(data['start'])
+    goal = int(data['goal'])
+    path, expanded = a_star_product(start, goal, parent_of, children_of, dummy_heuristic)
+    if path is None:
+        return jsonify({'error': 'No path found'}), 404
+    return jsonify({
+        'path': path,
+        'nodes_explored': expanded,
+        'path_length': len(path) - 1,
+        'cost': len(path) - 1
+    })
+
+@app.route('/api/predictor', methods=['POST'])
+def api_predictor():
+    data = request.get_json()
     try:
-        knn = KNNRecommender(MODEL_DIR)
-    except Exception as e:
-        st.warning(f"KNN recommender not available: {e}")
-        knn = None
+        features = {k: float(data[k]) for k in NUMERIC_FEATURES}
+        cluster = int(float(data.get('cluster', 0)))
+    except Exception:
+        return jsonify({'error': 'Invalid input'}), 400
+    session_row = pd.Series({**features, 'cluster': cluster})
+    prob = rf_predictor.predict_probability(session_row)
+    risk = "Low" if prob < 0.5 else "High"
+    return jsonify({
+        'probability': round(prob * 100, 1),
+        'risk_label': risk
+    })
 
-    try:
-        cluster_assigner = ClusterAssigner(MODEL_DIR)
-    except Exception as e:
-        st.error(f"Clustering model not loaded: {e}")
-        cluster_assigner = None
+@app.route('/api/bandit/recommend', methods=['POST'])
+def api_bandit():
+    data = request.get_json()
+    use_existing = data.get('use_existing', True)
 
-    try:
-        predictor = PurchasePredictor(MODEL_DIR)
-    except Exception as e:
-        st.error(f"Random Forest model not loaded: {e}")
-        predictor = None
-
-    feature_importance = None
-    if predictor is not None:
+    if not use_existing:
+        # New session – user provides features, no history
         try:
-            import json
-            with open(MODEL_DIR / "feature_importance.json", "r") as f:
-                feature_importance = json.load(f)
+            features = {k: float(data[k]) for k in NUMERIC_FEATURES}
+            # Assign cluster (needs num_transactions=0)
+            cluster_features = features.copy()
+            cluster_features['num_transactions'] = 0
+            cluster_val = cluster_assigner.assign_cluster(pd.Series(cluster_features))
+            session_row = pd.Series({**features, 'cluster': cluster_val})
+            context = build_bandit_context(session_row)
+            # For new sessions, KNN cannot be used; we force RF arm
+            arm = 1
+            # Recommend most popular item globally
+            recommended_item = most_popular_item
+            # Confidence = RF purchase probability
+            confidence = rf_predictor.predict_probability(session_row)
+        except Exception as e:
+            return jsonify({'error': str(e)}), 400
+    else:
+        # Existing session – use stored data
+        try:
+            visitor_id = int(data.get('visitor_id', 0))
+            session_id = int(data.get('session_id', 0))
         except:
-            pass
+            return jsonify({'error': 'Invalid visitor/session ID (must be integers)'}), 400
 
-    try:
-        bandit = LinUCB.load(MODEL_DIR)
-    except Exception as e:
-        st.error(f"Bandit parameters not loaded: {e}")
-        bandit = None
+        row = existing_sessions[
+            (existing_sessions['visitorid'] == visitor_id) &
+            (existing_sessions['session_id'] == session_id)
+        ]
+        if row.empty:
+            return jsonify({'error': f'Session not found: ({visitor_id},{session_id})'}), 404
+        row = row.iloc[0]
+        context = build_bandit_context(row)
 
-    try:
-        scaler_context = joblib.load(MODEL_DIR / "scaler_context.pkl")
-    except FileNotFoundError:
-        st.error("Scaler context not found. Run the notebooks first.")
-        scaler_context = None
-
-    numeric_features = ['num_views', 'num_addtocart', 'unique_items',
-                        'categories_viewed', 'duration_min']
-
-    try:
-        session_df = pd.read_parquet(PROC_DIR / "user_sessions.parquet")
-        if 'cluster' not in session_df.columns:
-            cluster_df = pd.read_csv(PROC_DIR / "user_clusters.csv")
-            session_df = session_df.merge(cluster_df, on=['visitorid', 'session_id'])
-    except Exception as e:
-        st.error(f"Could not load session data: {e}")
-        session_df = pd.DataFrame()
-
-    return {
-        "parent_of": parent_of,
-        "children_of": children_of,
-        "roots": roots,
-        "knn": knn,
-        "cluster_assigner": cluster_assigner,
-        "predictor": predictor,
-        "bandit": bandit,
-        "scaler_context": scaler_context,
-        "numeric_features": numeric_features,
-        "session_df": session_df,
-        "feature_importance": feature_importance
-    }
-
-data = load_all()
-
-# -------------------------------------------------------------------
-# Helper functions for visualisations (improved sizing)
-# -------------------------------------------------------------------
-def get_descendants(node, children_of):
-    descendants = set()
-    stack = list(children_of.get(node, []))
-    while stack:
-        child = stack.pop()
-        if child in descendants:
-            continue
-        descendants.add(child)
-        stack.extend(children_of.get(child, []))
-    return sorted(descendants)
-
-def plot_path_diagram(path):
-    if not path:
-        return
-    fig, ax = plt.subplots(figsize=(8, 2.5))
-    fig.patch.set_facecolor('#121212')
-    ax.set_facecolor('#121212')
-    ax.set_xlim(-0.5, len(path) - 0.5)
-    ax.set_ylim(-0.5, 0.5)
-    ax.axis('off')
-
-    for i, node in enumerate(path):
-        box = FancyBboxPatch((i - 0.4, -0.3), 0.8, 0.6,
-                              boxstyle="round,pad=0.02",
-                              facecolor="#f97316", edgecolor="white", linewidth=1.5)
-        ax.add_patch(box)
-        ax.text(i, 0, str(node), ha='center', va='center', color='white', fontsize=9, weight='bold')
-        if i < len(path) - 1:
-            ax.annotate("", xy=(i+0.4, 0), xytext=(i+0.6, 0),
-                        arrowprops=dict(arrowstyle="->", color="white", lw=1.5))
-    ax.set_title("Optimal Category Path", color='white', fontsize=12)
-    st.pyplot(fig)
-    plt.close(fig)
-
-def plot_probability_gauge(prob):
-    fig, ax = plt.subplots(figsize=(4, 2.5), subplot_kw={'projection': 'polar'})
-    fig.patch.set_facecolor('#121212')
-    ax.set_facecolor('#121212')
-    theta = np.linspace(0, np.pi, 100)
-    r = 1.0
-    ax.bar(theta, r, width=0.02, color='#2c4f6e', alpha=0.3)
-    fill_theta = np.linspace(0, prob * np.pi, 100)
-    ax.fill_between(fill_theta, 0, r, alpha=0.7, color='#f97316')
-    ax.set_ylim(0, 1.2)
-    ax.set_xticks([0, np.pi/2, np.pi])
-    ax.set_xticklabels(['0%', '50%', '100%'], color='white')
-    ax.set_yticks([])
-    ax.set_title("Purchase Probability", color='white', fontsize=10)
-    st.pyplot(fig)
-    plt.close(fig)
-
-def plot_feature_importance():
-    if data["feature_importance"]:
-        features = list(data["feature_importance"].keys())
-        importances = list(data["feature_importance"].values())
-        fig, ax = plt.subplots(figsize=(6, 4))
-        fig.patch.set_facecolor('#121212')
-        ax.set_facecolor('#121212')
-        bars = ax.barh(features, importances, color='#f97316', edgecolor='white')
-        ax.set_xlabel("Importance", color='white')
-        ax.set_title("Global Feature Importance (Random Forest)", color='white')
-        ax.tick_params(colors='white')
-        for spine in ax.spines.values():
-            spine.set_color('white')
-        st.pyplot(fig)
-        plt.close(fig)
-    else:
-        st.info("Feature importance data not available.")
-
-def plot_bandit_ucb(bandit, context):
-    n_arms = bandit.n_arms
-    ucb_values = []
-    theta_vals = []
-    for arm in range(n_arms):
-        A_inv = np.linalg.inv(bandit.A[arm])
-        theta = A_inv @ bandit.b[arm]
-        p = np.dot(theta, context)
-        ucb = p + bandit.alpha * np.sqrt(context @ A_inv @ context)
-        ucb_values.append(ucb)
-        theta_vals.append(p)
-
-    fig, ax = plt.subplots(figsize=(6, 4))
-    fig.patch.set_facecolor('#121212')
-    ax.set_facecolor('#121212')
-    arms = ['KNN (arm0)', 'RF (arm1)']
-    x = np.arange(len(arms))
-    width = 0.35
-    bars1 = ax.bar(x - width/2, theta_vals, width, label='Expected reward', color='#3b82f6')
-    bars2 = ax.bar(x + width/2, ucb_values, width, label='UCB', color='#f97316', alpha=0.7)
-    ax.set_ylabel('Value', color='white')
-    ax.set_title('LinUCB Arm Evaluation', color='white')
-    ax.set_xticks(x)
-    ax.set_xticklabels(arms, color='white')
-    ax.legend(facecolor='#0f2a3f', labelcolor='white')
-    ax.tick_params(colors='white')
-    for spine in ax.spines.values():
-        spine.set_color('white')
-    st.pyplot(fig)
-    plt.close(fig)
-
-# -------------------------------------------------------------------
-# Fixed Header (similar to PathPulse)
-# -------------------------------------------------------------------
-def get_base64_emoji():
-    # Simple transparent 1x1 pixel base64 for placeholder if needed
-    return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-
-# Placeholder – you can replace with actual logo if you have one
-logo_base64 = get_base64_emoji()
-
-st.markdown(
-    f"""
-    <div class="custom-header">
-        <span class="header-icon">🛒</span>
-        <span class="header-title">E‑commerce Intelligence</span>
-    </div>
-    <div style="text-align: center; margin-bottom: 1.5rem; padding-top: 1rem;">
-        <div class="liquid-glass-logo-container" style="margin: 0 auto;">
-            <span style="font-size: 3rem;">🛒📊</span>
-        </div>
-        <p style="font-size: 1rem; color: #d1d5db; margin-top: 1rem;">
-            A* search · Purchase prediction · Contextual Bandit orchestration
-        </p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-# -------------------------------------------------------------------
-# Tabs
-# -------------------------------------------------------------------
-tab1, tab2, tab3 = st.tabs(["🔍 A* Product Search", "📈 Purchase Prediction", "🎯 Contextual Bandit"])
-
-# =========================================================================
-# TAB 1 – A* Search
-# =========================================================================
-with tab1:
-    st.markdown(
-        """
-        <div class="glass-card" style="margin-bottom: 24px;">
-            <h2>Optimal Category Pathfinding</h2>
-            <p>Find the shortest route between product categories using A* search on the category tree.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    col1_ctrl, col1_plot = st.columns([1, 1.2])
-
-    with col1_ctrl:
-        if not data["parent_of"]:
-            st.warning("Category data not loaded. Please check data/raw/category_tree.csv")
+        force_arm = data.get('force_arm')
+        if force_arm == 'knn':
+            arm = 0
+        elif force_arm == 'rf':
+            arm = 1
         else:
-            all_cats = sorted(set(data["parent_of"].keys()) | set(data["children_of"].keys()))
-            for r in data["roots"]:
-                if r not in all_cats:
-                    all_cats.append(r)
-            all_cats = sorted(all_cats)
+            arm = bandit.select_arm(context)
 
-            start_cat = st.selectbox("Start category (root)", data["roots"], key="astar_start")
-            descendants = get_descendants(start_cat, data["children_of"])
-            if descendants:
-                goal_options = [g for g in all_cats if g in descendants]
-                if not goal_options:
-                    goal_options = all_cats
-            else:
-                goal_options = all_cats
-            goal_cat = st.selectbox("Goal category", goal_options, key="astar_goal")
-
-            if st.button("Find Path", key="astar_btn", use_container_width=True):
-                def simple_heuristic(node, goal):
-                    return 0
-                path, expanded = a_star_product(start_cat, goal_cat,
-                                                data["parent_of"], data["children_of"],
-                                                simple_heuristic)
-                if path:
-                    st.success(f"✅ Path found! Expanded {expanded} nodes.")
-                    st.markdown(f"**Path:** {' → '.join(map(str, path))}")
-                else:
-                    st.error("❌ No path found between these categories.")
-
-    with col1_plot:
-        if 'path' in locals() and path:
-            plot_path_diagram(path)
-
-# =========================================================================
-# TAB 2 – Purchase Prediction
-# =========================================================================
-with tab2:
-    st.markdown(
-        """
-        <div class="glass-card" style="margin-bottom: 24px;">
-            <h2>Purchase Probability Engine</h2>
-            <p>Enter session metrics to predict the likelihood of a purchase using a trained Random Forest model.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if data["predictor"] is None:
-        st.error("Random Forest model not available. Run notebook 03 first.")
-    else:
-        col_form, col_gauge = st.columns([1, 0.8])
-
-        with col_form:
-            with st.form("prediction_form"):
-                colA, colB = st.columns(2)
-                with colA:
-                    num_views = st.number_input("Number of views", min_value=0, value=5)
-                    num_addtocart = st.number_input("Add‑to‑carts", min_value=0, value=1)
-                    unique_items = st.number_input("Unique items viewed", min_value=0, value=3)
-                with colB:
-                    categories_viewed = st.number_input("Categories explored", min_value=0, value=2)
-                    duration_min = st.number_input("Session duration (minutes)", min_value=0.0, value=8.0)
-                cluster = st.selectbox("User cluster (0–3)", [0,1,2,3])
-                submitted = st.form_submit_button("Predict", use_container_width=True)
-
-        if submitted:
-            session_row = pd.Series({
-                'num_views': num_views,
-                'num_addtocart': num_addtocart,
-                'unique_items': unique_items,
-                'categories_viewed': categories_viewed,
-                'duration_min': duration_min,
-                'cluster': cluster
-            })
-            prob = data["predictor"].predict_probability(session_row)
-
-            with col_gauge:
-                plot_probability_gauge(prob)
-
-            # Metric & risk message
-            col_metric, _ = st.columns([1, 2])
-            with col_metric:
-                st.metric("Purchase Probability", f"{prob*100:.2f}%")
-                if prob > 0.5:
-                    st.warning("⚠️ High purchase likelihood – consider retargeting.")
-                else:
-                    st.info("✅ Low risk – general recommendations are safe.")
-
-            # Feature importance (full width)
-            st.markdown("<div class='glass-card' style='margin-top: 24px;'><h3>Model Insights</h3></div>", unsafe_allow_html=True)
-            plot_feature_importance()
-
-# =========================================================================
-# TAB 3 – Contextual Bandit
-# =========================================================================
-with tab3:
-    st.markdown(
-        """
-        <div class="glass-card" style="margin-bottom: 24px;">
-            <h2>Live Recommendation Orchestration</h2>
-            <p>LinUCB chooses between KNN (item similarity) and Random Forest (purchase likelihood) based on context.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if data["bandit"] is None or data["predictor"] is None:
-        st.error("Bandit or Random Forest model missing. Please run notebook 04.")
-    else:
-        @st.cache_resource
-        def load_events():
-            return pd.read_parquet("data/processed/events_with_sessions.parquet",
-                                   columns=['visitorid', 'session_id', 'timestamp', 'event', 'itemid'])
-
-        events_df = load_events()
-
-        def get_user_items(user_id, session_id):
-            session_events = events_df[
-                (events_df['visitorid'] == user_id) & 
+        if arm == 0:  # KNN
+            last_item = session_last_item.get((visitor_id, session_id))
+            if last_item is None:
+                return jsonify({'error': 'No interaction history for KNN'}), 400
+            rec_item, sim_score = get_knn_recommendation(last_item)
+            if rec_item is None:
+                return jsonify({'error': 'No similar item found'}), 400
+            recommended_item = rec_item
+            confidence = sim_score
+        else:  # Random Forest
+            # Most frequent item in the session (from events)
+            session_items = events_df[
+                (events_df['visitorid'] == visitor_id) &
                 (events_df['session_id'] == session_id)
-            ].sort_values('timestamp')
-            if session_events.empty:
-                return []
-            return session_events['itemid'].tolist()
+            ]['itemid']
+            if session_items.empty:
+                return jsonify({'error': 'No items in this session'}), 400
+            # Most viewed item in the session
+            recommended_item = int(session_items.value_counts().index[0])
+            confidence = rf_predictor.predict_probability(row)
 
-        input_type = st.radio("Choose input method", ["Use existing session ID", "Create new session"], horizontal=True)
+    return jsonify({
+        'arm': 'KNN' if arm == 0 else 'Random Forest',
+        'recommended_item': recommended_item,
+        'confidence': round(confidence, 3)
+    })
 
-        if input_type == "Use existing session ID":
-            if data["session_df"].empty:
-                st.error("No session data loaded.")
-            else:
-                col_ctrl, col_bandit_plot = st.columns([1, 1.2])
-                with col_ctrl:
-                    user_id = st.number_input("Visitor ID", min_value=0, step=1, value=0)
-                    session_id = st.number_input("Session ID", min_value=0, step=1, value=0)
-                    if st.button("Get Recommendation", key="bandit_existing", use_container_width=True):
-                        session = data["session_df"][(data["session_df"]["visitorid"] == user_id) &
-                                                     (data["session_df"]["session_id"] == session_id)]
-                        if session.empty:
-                            st.error("Session not found. Please use a valid (visitorid, session_id) pair.")
-                        else:
-                            row = session.iloc[0]
-                            context = get_context_vector(row, data["scaler_context"], data["numeric_features"])
-                            arm = data["bandit"].select_arm(context)
+# ------------------------------------------------------------
+# HTML template (same clean UI, no hard‑coded examples)
+# ------------------------------------------------------------
+HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ML Insights Engine</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #0b1326; color: #dae2fd; }
+        .glass-panel { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.08); border-radius: 1rem; }
+        .active-nav { background-color: rgba(78, 222, 163, 0.1); border-right: 2px solid #4edea3; }
+        .btn-primary { background: #4d8eff; color: #002e6a; font-weight: bold; transition: all 0.2s; }
+        .btn-primary:hover { filter: brightness(1.1); box-shadow: 0 0 12px rgba(77,142,255,0.3); }
+        .input-dark { background: #060e20; border: 1px solid rgba(140,144,159,0.5); border-radius: 0.75rem; padding: 0.5rem 1rem; color: #dae2fd; }
+        .input-dark:focus { outline: none; border-color: #4d8eff; box-shadow: 0 0 0 1px #4d8eff; }
+    </style>
+    <script>
+        async function callAPI(endpoint, data) {
+            const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+            return res.json();
+        }
+    </script>
+</head>
+<body>
+<aside class="fixed left-0 top-0 h-full w-64 bg-surface-container-low border-r border-white/10 backdrop-blur-lg flex flex-col z-50 p-6">
+    <div class="mb-8"><h1 class="text-2xl font-bold text-primary">AI/ML Dashboard</h1><p class="text-xs text-on-surface-variant uppercase">Enterprise Intelligence</p></div>
+    <nav class="flex-1 space-y-2">
+        <a href="#" onclick="showSection('pathfinder');return false;" id="nav-pathfinder" class="flex items-center gap-3 px-4 py-3 rounded-lg text-on-surface-variant hover:bg-surface-container-high active-nav"><span class="material-symbols-outlined">route</span><span>Product Pathfinder</span></a>
+        <a href="#" onclick="showSection('predictor');return false;" id="nav-predictor" class="flex items-center gap-3 px-4 py-3 rounded-lg text-on-surface-variant hover:bg-surface-container-high"><span class="material-symbols-outlined">query_stats</span><span>Purchase Predictor</span></a>
+        <a href="#" onclick="showSection('bandit');return false;" id="nav-bandit" class="flex items-center gap-3 px-4 py-3 rounded-lg text-on-surface-variant hover:bg-surface-container-high"><span class="material-symbols-outlined">smart_toy</span><span>Bandit Recommender</span></a>
+    </nav>
+    <div class="mt-auto pt-4 border-t border-white/10"><button class="w-full py-2 bg-primary text-on-primary rounded-lg font-bold">Run New Model</button></div>
+</aside>
+<main class="ml-64 p-8 overflow-y-auto h-screen"><div class="max-w-6xl mx-auto space-y-8">
+    <!-- Pathfinder -->
+    <div id="section-pathfinder" class="space-y-6"><div><h2 class="text-3xl font-bold">Product Pathfinder</h2><p class="text-on-surface-variant">Optimal category path using A* heuristic search</p></div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6"><div class="glass-panel p-6 space-y-4"><label class="block text-sm uppercase">Start Category (ID)</label><input type="number" id="start_cat" class="input-dark w-full" value="1000"><label class="block text-sm uppercase">Goal Category (ID)</label><input type="number" id="goal_cat" class="input-dark w-full" value="1542"><button onclick="runPathfinder()" class="btn-primary w-full py-3 rounded-lg flex items-center justify-center gap-2"><span class="material-symbols-outlined">search</span> Find Path</button></div>
+    <div class="glass-panel p-6 space-y-4"><h3 class="font-bold flex items-center gap-2"><span class="material-symbols-outlined text-secondary">timeline</span> Result</h3><div id="pathfinder-result"><p>--</p></div><div id="path-list" class="bg-surface-container-lowest p-3 rounded-lg font-mono text-sm"></div></div></div></div>
+    <!-- Predictor -->
+    <div id="section-predictor" class="space-y-6 hidden"><div><h2 class="text-3xl font-bold">Purchase Predictor</h2><p class="text-on-surface-variant">Random Forest conversion probability</p></div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6"><div class="glass-panel p-6 space-y-4"><div class="grid grid-cols-2 gap-4"><div><label>Views</label><input type="number" id="views" class="input-dark w-full" value="12"></div><div><label>Add-to-carts</label><input type="number" id="addtocart" class="input-dark w-full" value="2"></div><div><label>Unique items</label><input type="number" id="unique_items" class="input-dark w-full" value="4"></div><div><label>Categories viewed</label><input type="number" id="categories" class="input-dark w-full" value="2"></div><div><label>Duration (min)</label><input type="number" step="0.1" id="duration" class="input-dark w-full" value="8.5"></div><div><label>Cluster (0–3)</label><input type="number" id="cluster" class="input-dark w-full" value="1"></div></div><button onclick="runPredictor()" class="btn-primary w-full py-3 rounded-lg">Predict</button></div>
+    <div class="glass-panel p-6 space-y-4 text-center"><span class="text-sm text-on-surface-variant">PURCHASE PROBABILITY</span><div class="text-5xl font-bold text-secondary" id="prob-value">--%</div><div class="h-2 w-full bg-surface-container-high rounded-full overflow-hidden"><div id="prob-bar" class="h-full bg-secondary" style="width:0%"></div></div><div><span class="text-sm">Risk label: </span><span id="risk-label" class="font-bold">--</span></div></div></div></div>
+    <!-- Bandit -->
+    <div id="section-bandit" class="space-y-6 hidden"><div><h2 class="text-3xl font-bold">Bandit Recommender</h2><p class="text-on-surface-variant">Contextual multi‑armed bandit – KNN vs Random Forest</p></div>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6"><div class="glass-panel p-6 space-y-4"><div class="flex gap-4"><label class="inline-flex items-center gap-2"><input type="radio" name="session_mode" value="existing" checked> Use existing session</label><label class="inline-flex items-center gap-2"><input type="radio" name="session_mode" value="new"> Create new session</label></div>
+    <div id="existing-fields"><label class="block text-sm">Visitor ID</label><input type="number" id="visitor_id" class="input-dark w-full" value="0"><label class="block text-sm mt-3">Session ID</label><input type="number" id="session_id" class="input-dark w-full" value="0"></div>
+    <div id="new-fields" class="hidden space-y-3"><p class="text-sm text-secondary">Enter session behavior</p><div class="grid grid-cols-2 gap-3"><div><label>Views</label><input type="number" id="new_views" class="input-dark w-full"></div><div><label>Add-to-carts</label><input type="number" id="new_addtocart" class="input-dark w-full"></div><div><label>Unique items</label><input type="number" id="new_unique" class="input-dark w-full"></div><div><label>Categories</label><input type="number" id="new_categories" class="input-dark w-full"></div><div><label>Duration (min)</label><input type="number" id="new_duration" class="input-dark w-full"></div></div></div>
+    <div class="mt-4"><label class="block text-sm">Arm selection</label><select id="arm_choice" class="input-dark w-full"><option value="auto">Bandit chooses</option><option value="knn">Force KNN</option><option value="rf">Force Random Forest</option></select></div>
+    <button onclick="runBandit()" class="btn-primary w-full py-3 rounded-lg mt-2">Get Recommendation</button></div>
+    <div class="glass-panel p-6 space-y-4"><div class="flex justify-between"><span class="text-sm">Selected arm</span><span id="bandit-arm" class="text-secondary font-bold">--</span></div><div><span class="text-sm">Recommended item ID</span><div id="rec-item" class="text-2xl font-mono font-bold">--</div></div><div><span class="text-sm">Confidence</span> <span id="rec-conf">--</span></div><div id="bandit-note" class="text-xs text-on-surface-variant mt-2"></div></div></div></div>
+</div></main>
+<script>
+    function showSection(section) {
+        document.querySelectorAll('[id^="section-"]').forEach(el => el.classList.add('hidden'));
+        document.getElementById(`section-${section}`).classList.remove('hidden');
+        document.querySelectorAll('[id^="nav-"]').forEach(el => el.classList.remove('active-nav'));
+        document.getElementById(`nav-${section}`).classList.add('active-nav');
+    }
+    const radioExisting = document.querySelector('input[value="existing"]');
+    const radioNew = document.querySelector('input[value="new"]');
+    function toggleSessionMode() { const isExisting = radioExisting.checked; document.getElementById('existing-fields').style.display = isExisting ? 'block' : 'none'; document.getElementById('new-fields').classList.toggle('hidden', isExisting); }
+    radioExisting.addEventListener('change', toggleSessionMode); radioNew.addEventListener('change', toggleSessionMode); toggleSessionMode();
+    async function runPathfinder() {
+        const start = parseInt(document.getElementById('start_cat').value), goal = parseInt(document.getElementById('goal_cat').value);
+        const res = await callAPI('/api/pathfinder', { start, goal });
+        if (res.error) { document.getElementById('pathfinder-result').innerHTML = `<p class="text-error">Error: ${res.error}</p>`; return; }
+        document.getElementById('pathfinder-result').innerHTML = `<p>Nodes explored: ${res.nodes_explored}</p><p>Path length: ${res.path_length}</p><p>Cost: ${res.cost}</p>`;
+        document.getElementById('path-list').innerHTML = `<div class="space-y-1">${res.path.map((id,i)=>`<div>${i+1}. CAT_${id}</div>`).join('')}</div>`;
+    }
+    async function runPredictor() {
+        const payload = {
+            num_views: parseFloat(document.getElementById('views').value),
+            num_addtocart: parseFloat(document.getElementById('addtocart').value),
+            unique_items: parseFloat(document.getElementById('unique_items').value),
+            categories_viewed: parseFloat(document.getElementById('categories').value),
+            duration_min: parseFloat(document.getElementById('duration').value),
+            cluster: parseFloat(document.getElementById('cluster').value)
+        };
+        const res = await callAPI('/api/predictor', payload);
+        if (res.error) { alert(res.error); return; }
+        document.getElementById('prob-value').innerHTML = `${res.probability}%`;
+        document.getElementById('prob-bar').style.width = `${res.probability}%`;
+        document.getElementById('risk-label').innerHTML = res.risk_label;
+    }
+    async function runBandit() {
+        const useExisting = document.querySelector('input[name="session_mode"]:checked').value === 'existing';
+        const forceArm = document.getElementById('arm_choice').value;
+        let payload = { use_existing: useExisting, force_arm: forceArm === 'auto' ? null : forceArm };
+        if (useExisting) {
+            payload.visitor_id = parseInt(document.getElementById('visitor_id').value);
+            payload.session_id = parseInt(document.getElementById('session_id').value);
+        } else {
+            payload.num_views = parseFloat(document.getElementById('new_views').value);
+            payload.num_addtocart = parseFloat(document.getElementById('new_addtocart').value);
+            payload.unique_items = parseFloat(document.getElementById('new_unique').value);
+            payload.categories_viewed = parseFloat(document.getElementById('new_categories').value);
+            payload.duration_min = parseFloat(document.getElementById('new_duration').value);
+        }
+        const res = await callAPI('/api/bandit/recommend', payload);
+        if (res.error) { alert(res.error); return; }
+        document.getElementById('bandit-arm').innerHTML = res.arm;
+        document.getElementById('rec-item').innerHTML = res.recommended_item;
+        document.getElementById('rec-conf').innerHTML = (res.confidence * 100).toFixed(1) + '%';
+        document.getElementById('bandit-note').innerHTML = useExisting ? 'Based on session history and bandit decision' : 'New session – using most‑popular item and RF probability.';
+    }
+    showSection('pathfinder');
+</script>
+</body>
+</html>
+"""
 
-                            with col_bandit_plot:
-                                plot_bandit_ucb(data["bandit"], context)
+@app.route('/')
+def index():
+    return render_template_string(HTML_TEMPLATE)
 
-                            user_items = get_user_items(user_id, session_id)
-
-                            if arm == 0:
-                                st.info("🎯 **Arm 0 selected: KNN**")
-                                if data["knn"] is None:
-                                    st.warning("KNN recommender not available.")
-                                elif not user_items:
-                                    st.warning("No items found for this session. Cannot recommend using KNN.")
-                                else:
-                                    recommended_items = data["knn"].recommend(user_items, top_n=3)
-                                    if recommended_items:
-                                        st.write("**Recommended items (similar to your last click):**")
-                                        for rec in recommended_items:
-                                            st.code(f"Item ID: {rec}", language="text")
-                                    else:
-                                        st.write("No similar items found.")
-                            else:
-                                st.info("📊 **Arm 1 selected: Random Forest**")
-                                prob = data["predictor"].predict_probability(row)
-                                st.metric("Predicted purchase probability", f"{prob*100:.2f}%")
-
-        else:  # Create new session
-            with st.form("new_session_form"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    nv = st.number_input("Views", 0, 100, 5)
-                    nac = st.number_input("Add‑to‑carts", 0, 50, 1)
-                    uitems = st.number_input("Unique items", 0, 50, 3)
-                with col2:
-                    cats = st.number_input("Categories viewed", 0, 50, 2)
-                    dur = st.number_input("Duration (min)", 0.0, 300.0, 8.0)
-                cluster = st.selectbox("Cluster", [0,1,2,3])
-                submitted = st.form_submit_button("Recommend", use_container_width=True)
-
-            if submitted:
-                row = pd.Series({
-                    'num_views': nv,
-                    'num_addtocart': nac,
-                    'unique_items': uitems,
-                    'categories_viewed': cats,
-                    'duration_min': dur,
-                    'cluster': cluster
-                })
-                context = get_context_vector(row, data["scaler_context"], data["numeric_features"])
-                arm = data["bandit"].select_arm(context)
-
-                # Show UCB plot even for new sessions
-                plot_bandit_ucb(data["bandit"], context)
-
-                if arm == 0:
-                    st.warning("KNN requires an existing session with item history. Cannot recommend for a new session.")
-                    st.info("Try using a real session ID from the examples above.")
-                else:
-                    st.success("🧠 Bandit chooses **Random Forest**")
-                    prob = data["predictor"].predict_probability(row)
-                    st.metric("Purchase probability", f"{prob*100:.2f}%")
-
-# -------------------------------------------------------------------
-# Footer
-# -------------------------------------------------------------------
-st.markdown(
-    """
-    <hr style="margin-top: 48px;" />
-    <p style="text-align: center; font-size: 0.75rem; color: #d1d5db; font-weight: 500;">
-        E‑commerce Intelligence System — A* · Random Forest · LinUCB
-    </p>
-    """,
-    unsafe_allow_html=True,
-)
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5000)
