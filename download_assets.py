@@ -59,7 +59,7 @@ def _progress(block_num: int, block_size: int, total_size: int) -> None:
 def download_file(rel_path: str, size_bytes: int, force: bool = False) -> bool:
     dest = BASE_DIR / rel_path
     if dest.exists() and not force:
-        print(f"  ✓  Already exists — skipping:  {rel_path}")
+        print(f"  [OK] Already exists - skipping:  {rel_path}")
         return True
 
     # File name on the Release page is just the basename (flat structure)
@@ -68,13 +68,13 @@ def download_file(rel_path: str, size_bytes: int, force: bool = False) -> bool:
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     size_mb = size_bytes / 1_048_576
-    print(f"  ↓  {rel_path}  (~{size_mb:.0f} MB)")
+    print(f"  [DOWNLOAD] {rel_path}  (~{size_mb:.0f} MB)")
     try:
         urlretrieve(url, dest, reporthook=_progress)
         print()  # newline after the progress bar
         return True
     except URLError as exc:
-        print(f"\n  ✗  Download failed: {exc}")
+        print(f"\n  [ERROR] Download failed: {exc}")
         if dest.exists():
             dest.unlink()   # remove partial file
         return False
@@ -104,9 +104,9 @@ def main() -> None:
         print()
 
     if all_ok:
-        print("✅  All assets ready.  Run the app with:  python app.py")
+        print("[SUCCESS] All assets ready. Run the app with:  python app.py")
     else:
-        print("⚠️   Some downloads failed. Check your internet connection or")
+        print("[WARNING] Some downloads failed. Check your internet connection or")
         print(f"    visit the release page manually:\n    https://github.com/{REPO}/releases/tag/{RELEASE_TAG}")
         sys.exit(1)
 
