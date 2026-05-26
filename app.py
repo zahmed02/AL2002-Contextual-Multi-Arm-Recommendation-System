@@ -1,3 +1,4 @@
+import sys
 import pandas as pd
 import numpy as np
 import joblib
@@ -17,6 +18,34 @@ BASE_DIR = Path(__file__).parent
 DATA_RAW = BASE_DIR / "data/raw"
 DATA_PROCESSED = BASE_DIR / "data/processed"
 MODELS_DIR = BASE_DIR / "models"
+
+# ------------------------------------------------------------
+# Pre-flight check: make sure all large assets are present
+# ------------------------------------------------------------
+_REQUIRED_FILES = [
+    MODELS_DIR / "item_similarity.pkl",
+    MODELS_DIR / "kmeans_model.pkl",
+    MODELS_DIR / "random_forest.pkl",
+    MODELS_DIR / "scaler_context.pkl",
+    DATA_PROCESSED / "events_with_sessions.parquet",
+    DATA_PROCESSED / "user_sessions.parquet",
+    DATA_PROCESSED / "user_clusters.parquet",
+]
+_missing = [f.relative_to(BASE_DIR) for f in _REQUIRED_FILES if not f.exists()]
+if _missing:
+    print()
+    print("ERROR: The following required files are missing:")
+    for _f in _missing:
+        print(f"  - {_f}")
+    print()
+    print("To download pre-trained assets from the GitHub Release, run:")
+    print("  python download_assets.py")
+    print()
+    print("Alternatively, regenerate them by running the Jupyter notebooks")
+    print("in notebooks/ (01 -> 04) after placing the raw Kaggle CSVs in data/raw/.")
+    print()
+    sys.exit(1)
+
 
 # ------------------------------------------------------------
 # Load product graph and dummy heuristic (A*)
