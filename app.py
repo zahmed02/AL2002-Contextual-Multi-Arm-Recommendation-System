@@ -330,7 +330,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     <div class="info-card">
         <span class="material-symbols-outlined text-[15px] align-middle mr-1">info</span>
-        The catalog is a tree of numeric category IDs. The pre-filled pair <strong>(1000 → 1542)</strong> is a valid example — just hit <em>Find Shortest Path</em> to try it. You can also type any other IDs to explore different paths.
+        The catalog is a forest of multiple disjoint category trees. The pre-filled pair <strong>(1000 → 2)</strong> is connected — hit <em>Find Shortest Path</em> to see it. If you try categories in disconnected trees (like <strong>1000 → 1542</strong>), it will correctly report <em>No path found</em>.
     </div>
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -342,14 +342,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
             <div>
                 <label class="block text-sm font-medium mb-1">Goal Category ID</label>
-                <input type="number" id="goal_cat" class="input-dark" value="1542">
+                <input type="number" id="goal_cat" class="input-dark" value="2">
                 <p class="hint">Must be different from the start ID</p>
             </div>
             <div class="space-y-1">
                 <span class="text-xs font-semibold uppercase tracking-wider" style="color:#6b7280">Quick Examples:</span>
                 <div class="flex flex-wrap gap-2">
-                    <button type="button" onclick="setPathfinderPreset(1000, 1542)" class="px-2.5 py-1 text-xs rounded border border-white/10 hover:border-[#4d8eff]/50 hover:bg-[#4d8eff]/10 transition-colors" style="background:#060e20; color:#dae2fd">Deep Leap (1000 → 1542)</button>
-                    <button type="button" onclick="setPathfinderPreset(1000, 1005)" class="px-2.5 py-1 text-xs rounded border border-white/10 hover:border-[#4d8eff]/50 hover:bg-[#4d8eff]/10 transition-colors" style="background:#060e20; color:#dae2fd">Short Step (1000 → 1005)</button>
+                    <button type="button" onclick="setPathfinderPreset(1000, 2)" class="px-2.5 py-1 text-xs rounded border border-white/10 hover:border-[#4d8eff]/50 hover:bg-[#4d8eff]/10 transition-colors" style="background:#060e20; color:#dae2fd">Standard Leap (1000 → 2)</button>
+                    <button type="button" onclick="setPathfinderPreset(1000, 92)" class="px-2.5 py-1 text-xs rounded border border-white/10 hover:border-[#4d8eff]/50 hover:bg-[#4d8eff]/10 transition-colors" style="background:#060e20; color:#dae2fd">Short Step (1000 → 92)</button>
+                    <button type="button" onclick="setPathfinderPreset(1000, 1542)" class="px-2.5 py-1 text-xs rounded border border-white/10 hover:border-[#ef4444]/50 hover:bg-[#ef4444]/10 transition-colors" style="background:#060e20; color:#dae2fd">Disjoint Trees (1000 → 1542)</button>
                 </div>
             </div>
             <div id="pathfinder-error" class="inline-error"></div>
