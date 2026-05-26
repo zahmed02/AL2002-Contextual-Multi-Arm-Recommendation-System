@@ -65,10 +65,7 @@ events_df['session_id'] = events_df['session_id'].astype(int)
 valid_sessions = existing_sessions[['visitorid', 'session_id']].drop_duplicates()
 events_df = events_df.merge(valid_sessions, on=['visitorid', 'session_id'], how='inner')
 last_items = events_df.sort_values('timestamp').groupby(['visitorid', 'session_id']).last().reset_index()
-session_last_item = {
-    (row['visitorid'], row['session_id']): row['itemid']
-    for _, row in last_items.iterrows()
-}
+session_last_item = dict(zip(zip(last_items['visitorid'], last_items['session_id']), last_items['itemid']))
 print(f"Loaded {len(session_last_item)} sessions with last item.")
 
 # ------------------------------------------------------------
