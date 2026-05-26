@@ -232,120 +232,516 @@ def api_bandit():
     })
 
 # ------------------------------------------------------------
-# HTML template (same clean UI, no hard‑coded examples)
+# HTML template — improved UX for non-technical users
 # ------------------------------------------------------------
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ML Insights Engine</title>
+    <title>ML Insights Engine — RetailRocket Recommendation System</title>
+    <meta name="description" content="Interactive dashboard for the Contextual Multi-Arm Recommendation System: A* pathfinding, purchase prediction, and bandit-based recommendations.">
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet">
     <style>
         body { font-family: 'Inter', sans-serif; background-color: #0b1326; color: #dae2fd; }
-        .glass-panel { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.08); border-radius: 1rem; }
-        .active-nav { background-color: rgba(78, 222, 163, 0.1); border-right: 2px solid #4edea3; }
-        .btn-primary { background: #4d8eff; color: #002e6a; font-weight: bold; transition: all 0.2s; }
-        .btn-primary:hover { filter: brightness(1.1); box-shadow: 0 0 12px rgba(77,142,255,0.3); }
-        .input-dark { background: #060e20; border: 1px solid rgba(140,144,159,0.5); border-radius: 0.75rem; padding: 0.5rem 1rem; color: #dae2fd; }
+        .glass-panel { background: rgba(30,41,59,0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.08); border-radius: 1rem; }
+        .active-nav { background-color: rgba(78,222,163,0.12); border-left: 3px solid #4edea3; }
+        .btn-primary { background: #4d8eff; color: #fff; font-weight: 600; transition: all 0.2s; border-radius: 0.75rem; }
+        .btn-primary:hover:not(:disabled) { filter: brightness(1.12); box-shadow: 0 0 18px rgba(77,142,255,0.4); }
+        .btn-primary:disabled { opacity: 0.55; cursor: not-allowed; }
+        .input-dark { background: #060e20; border: 1px solid rgba(140,144,159,0.35); border-radius: 0.65rem; padding: 0.55rem 1rem; color: #dae2fd; width: 100%; }
         .input-dark:focus { outline: none; border-color: #4d8eff; box-shadow: 0 0 0 1px #4d8eff; }
+        select.input-dark option { background: #0b1326; }
+        .hint { font-size: 0.71rem; color: #6b7280; margin-top: 3px; line-height: 1.4; }
+        .inline-error { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.35); border-radius: 0.5rem; padding: 0.6rem 1rem; color: #fca5a5; font-size: 0.84rem; margin-top: 0.5rem; display: none; }
+        .info-card { background: rgba(77,142,255,0.06); border: 1px solid rgba(77,142,255,0.18); border-radius: 0.75rem; padding: 0.85rem 1.1rem; font-size: 0.82rem; color: #93b4e8; line-height: 1.6; }
+        .stat-box { background: #060e20; border-radius: 0.75rem; padding: 0.9rem 1rem; }
+        .tag { display: inline-block; font-size: 0.67rem; font-weight: 700; padding: 2px 9px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.06em; }
+        .tag-green { background: rgba(78,222,163,0.15); color: #4edea3; }
+        .tag-blue  { background: rgba(77,142,255,0.15); color: #4d8eff; }
+        .tag-amber { background: rgba(251,191,36,0.15); color: #fbbf24; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spinner { display: inline-block; width: 15px; height: 15px; border: 2px solid rgba(255,255,255,0.25); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
+        .mode-btn { flex: 1; padding: 0.4rem; border-radius: 0.5rem; font-size: 0.85rem; font-weight: 500; transition: all 0.2s; cursor: pointer; border: none; }
+        .mode-btn-active { background: #4d8eff; color: #fff; }
+        .mode-btn-inactive { background: transparent; color: #6b7280; }
+        .path-step { display: flex; align-items: center; gap: 10px; padding: 6px 4px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .path-step:last-child { border-bottom: none; }
     </style>
-    <script>
-        async function callAPI(endpoint, data) {
-            const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-            return res.json();
-        }
-    </script>
 </head>
 <body>
-<aside class="fixed left-0 top-0 h-full w-64 bg-surface-container-low border-r border-white/10 backdrop-blur-lg flex flex-col z-50 p-6">
-    <div class="mb-8"><h1 class="text-2xl font-bold text-primary">AI/ML Dashboard</h1><p class="text-xs text-on-surface-variant uppercase">Enterprise Intelligence</p></div>
-    <nav class="flex-1 space-y-2">
-        <a href="#" onclick="showSection('pathfinder');return false;" id="nav-pathfinder" class="flex items-center gap-3 px-4 py-3 rounded-lg text-on-surface-variant hover:bg-surface-container-high active-nav"><span class="material-symbols-outlined">route</span><span>Product Pathfinder</span></a>
-        <a href="#" onclick="showSection('predictor');return false;" id="nav-predictor" class="flex items-center gap-3 px-4 py-3 rounded-lg text-on-surface-variant hover:bg-surface-container-high"><span class="material-symbols-outlined">query_stats</span><span>Purchase Predictor</span></a>
-        <a href="#" onclick="showSection('bandit');return false;" id="nav-bandit" class="flex items-center gap-3 px-4 py-3 rounded-lg text-on-surface-variant hover:bg-surface-container-high"><span class="material-symbols-outlined">smart_toy</span><span>Bandit Recommender</span></a>
+
+<!-- ═══ SIDEBAR ═══════════════════════════════════════════════ -->
+<aside class="fixed left-0 top-0 h-full w-64 flex flex-col z-50 p-5" style="background:#060e20; border-right: 1px solid rgba(255,255,255,0.07);">
+    <div class="mb-8">
+        <h1 class="text-lg font-bold" style="color:#4d8eff">AI / ML Dashboard</h1>
+        <p class="text-xs mt-0.5" style="color:#4b5563">RetailRocket Recommendation System</p>
+    </div>
+    <nav class="flex-1 space-y-1">
+        <a href="#" onclick="showSection('pathfinder');return false;" id="nav-pathfinder"
+           class="flex items-center gap-3 px-3 py-3 rounded-lg active-nav" style="color:#dae2fd; text-decoration:none;">
+            <span class="material-symbols-outlined text-[20px]" style="color:#4d8eff">route</span>
+            <div>
+                <div class="text-sm font-medium">Product Pathfinder</div>
+                <div class="text-xs" style="color:#4b5563">A* category search</div>
+            </div>
+        </a>
+        <a href="#" onclick="showSection('predictor');return false;" id="nav-predictor"
+           class="flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-white/5" style="color:#dae2fd; text-decoration:none;">
+            <span class="material-symbols-outlined text-[20px]" style="color:#4edea3">query_stats</span>
+            <div>
+                <div class="text-sm font-medium">Purchase Predictor</div>
+                <div class="text-xs" style="color:#4b5563">Random Forest model</div>
+            </div>
+        </a>
+        <a href="#" onclick="showSection('bandit');return false;" id="nav-bandit"
+           class="flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-white/5" style="color:#dae2fd; text-decoration:none;">
+            <span class="material-symbols-outlined text-[20px]" style="color:#fbbf24">smart_toy</span>
+            <div>
+                <div class="text-sm font-medium">Bandit Recommender</div>
+                <div class="text-xs" style="color:#4b5563">KNN vs Random Forest</div>
+            </div>
+        </a>
     </nav>
-    <div class="mt-auto pt-4 border-t border-white/10"><button class="w-full py-2 bg-primary text-on-primary rounded-lg font-bold">Run New Model</button></div>
+    <div class="pt-4 border-t text-xs" style="border-color:rgba(255,255,255,0.07); color:#4b5563;">
+        <p class="mb-1 font-medium" style="color:#6b7280">AL2002 — AI Lab</p>
+        <p>Dataset: RetailRocket E-commerce</p>
+        <p class="mt-1">1.76 M sessions · 2.75 M events</p>
+    </div>
 </aside>
-<main class="ml-64 p-8 overflow-y-auto h-screen"><div class="max-w-6xl mx-auto space-y-8">
-    <!-- Pathfinder -->
-    <div id="section-pathfinder" class="space-y-6"><div><h2 class="text-3xl font-bold">Product Pathfinder</h2><p class="text-on-surface-variant">Optimal category path using A* heuristic search</p></div>
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-6"><div class="glass-panel p-6 space-y-4"><label class="block text-sm uppercase">Start Category (ID)</label><input type="number" id="start_cat" class="input-dark w-full" value="1000"><label class="block text-sm uppercase">Goal Category (ID)</label><input type="number" id="goal_cat" class="input-dark w-full" value="1542"><button onclick="runPathfinder()" class="btn-primary w-full py-3 rounded-lg flex items-center justify-center gap-2"><span class="material-symbols-outlined">search</span> Find Path</button></div>
-    <div class="glass-panel p-6 space-y-4"><h3 class="font-bold flex items-center gap-2"><span class="material-symbols-outlined text-secondary">timeline</span> Result</h3><div id="pathfinder-result"><p>--</p></div><div id="path-list" class="bg-surface-container-lowest p-3 rounded-lg font-mono text-sm"></div></div></div></div>
-    <!-- Predictor -->
-    <div id="section-predictor" class="space-y-6 hidden"><div><h2 class="text-3xl font-bold">Purchase Predictor</h2><p class="text-on-surface-variant">Random Forest conversion probability</p></div>
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-6"><div class="glass-panel p-6 space-y-4"><div class="grid grid-cols-2 gap-4"><div><label>Views</label><input type="number" id="views" class="input-dark w-full" value="12"></div><div><label>Add-to-carts</label><input type="number" id="addtocart" class="input-dark w-full" value="2"></div><div><label>Unique items</label><input type="number" id="unique_items" class="input-dark w-full" value="4"></div><div><label>Categories viewed</label><input type="number" id="categories" class="input-dark w-full" value="2"></div><div><label>Duration (min)</label><input type="number" step="0.1" id="duration" class="input-dark w-full" value="8.5"></div><div><label>Cluster (0–3)</label><input type="number" id="cluster" class="input-dark w-full" value="1"></div></div><button onclick="runPredictor()" class="btn-primary w-full py-3 rounded-lg">Predict</button></div>
-    <div class="glass-panel p-6 space-y-4 text-center"><span class="text-sm text-on-surface-variant">PURCHASE PROBABILITY</span><div class="text-5xl font-bold text-secondary" id="prob-value">--%</div><div class="h-2 w-full bg-surface-container-high rounded-full overflow-hidden"><div id="prob-bar" class="h-full bg-secondary" style="width:0%"></div></div><div><span class="text-sm">Risk label: </span><span id="risk-label" class="font-bold">--</span></div></div></div></div>
-    <!-- Bandit -->
-    <div id="section-bandit" class="space-y-6 hidden"><div><h2 class="text-3xl font-bold">Bandit Recommender</h2><p class="text-on-surface-variant">Contextual multi‑armed bandit – KNN vs Random Forest</p></div>
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6"><div class="glass-panel p-6 space-y-4"><div class="flex gap-4"><label class="inline-flex items-center gap-2"><input type="radio" name="session_mode" value="existing" checked> Use existing session</label><label class="inline-flex items-center gap-2"><input type="radio" name="session_mode" value="new"> Create new session</label></div>
-    <div id="existing-fields"><label class="block text-sm">Visitor ID</label><input type="number" id="visitor_id" class="input-dark w-full" value="0"><label class="block text-sm mt-3">Session ID</label><input type="number" id="session_id" class="input-dark w-full" value="0"></div>
-    <div id="new-fields" class="hidden space-y-3"><p class="text-sm text-secondary">Enter session behavior</p><div class="grid grid-cols-2 gap-3"><div><label>Views</label><input type="number" id="new_views" class="input-dark w-full"></div><div><label>Add-to-carts</label><input type="number" id="new_addtocart" class="input-dark w-full"></div><div><label>Unique items</label><input type="number" id="new_unique" class="input-dark w-full"></div><div><label>Categories</label><input type="number" id="new_categories" class="input-dark w-full"></div><div><label>Duration (min)</label><input type="number" id="new_duration" class="input-dark w-full"></div></div></div>
-    <div class="mt-4"><label class="block text-sm">Arm selection</label><select id="arm_choice" class="input-dark w-full"><option value="auto">Bandit chooses</option><option value="knn">Force KNN</option><option value="rf">Force Random Forest</option></select></div>
-    <button onclick="runBandit()" class="btn-primary w-full py-3 rounded-lg mt-2">Get Recommendation</button></div>
-    <div class="glass-panel p-6 space-y-4"><div class="flex justify-between"><span class="text-sm">Selected arm</span><span id="bandit-arm" class="text-secondary font-bold">--</span></div><div><span class="text-sm">Recommended item ID</span><div id="rec-item" class="text-2xl font-mono font-bold">--</div></div><div><span class="text-sm">Confidence</span> <span id="rec-conf">--</span></div><div id="bandit-note" class="text-xs text-on-surface-variant mt-2"></div></div></div></div>
-</div></main>
+
+<!-- ═══ MAIN CONTENT ══════════════════════════════════════════ -->
+<main class="ml-64 p-8 overflow-y-auto h-screen">
+<div class="max-w-5xl mx-auto space-y-8">
+
+<!-- ─────────────────────────────────────────────────────────── -->
+<!-- PATHFINDER                                                   -->
+<!-- ─────────────────────────────────────────────────────────── -->
+<div id="section-pathfinder" class="space-y-5">
+    <div>
+        <div class="flex items-center gap-3 mb-1">
+            <h2 class="text-3xl font-bold">Product Pathfinder</h2>
+            <span class="tag tag-blue">A* Search</span>
+        </div>
+        <p style="color:#6b7280">Finds the shortest navigation path between two product categories in the RetailRocket catalog — like GPS, but for an e-commerce category tree.</p>
+    </div>
+
+    <div class="info-card">
+        <span class="material-symbols-outlined text-[15px] align-middle mr-1">info</span>
+        The catalog is a tree of numeric category IDs. The pre-filled pair <strong>(1000 → 1542)</strong> is a valid example — just hit <em>Find Shortest Path</em> to try it. You can also type any other IDs to explore different paths.
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div class="glass-panel p-6 space-y-4">
+            <div>
+                <label class="block text-sm font-medium mb-1">Start Category ID</label>
+                <input type="number" id="start_cat" class="input-dark" value="1000">
+                <p class="hint">A numeric product category from the RetailRocket catalog</p>
+            </div>
+            <div>
+                <label class="block text-sm font-medium mb-1">Goal Category ID</label>
+                <input type="number" id="goal_cat" class="input-dark" value="1542">
+                <p class="hint">Must be different from the start ID</p>
+            </div>
+            <div class="space-y-1">
+                <span class="text-xs font-semibold uppercase tracking-wider" style="color:#6b7280">Quick Examples:</span>
+                <div class="flex flex-wrap gap-2">
+                    <button type="button" onclick="setPathfinderPreset(1000, 1542)" class="px-2.5 py-1 text-xs rounded border border-white/10 hover:border-[#4d8eff]/50 hover:bg-[#4d8eff]/10 transition-colors" style="background:#060e20; color:#dae2fd">Deep Leap (1000 → 1542)</button>
+                    <button type="button" onclick="setPathfinderPreset(1000, 1005)" class="px-2.5 py-1 text-xs rounded border border-white/10 hover:border-[#4d8eff]/50 hover:bg-[#4d8eff]/10 transition-colors" style="background:#060e20; color:#dae2fd">Short Step (1000 → 1005)</button>
+                </div>
+            </div>
+            <div id="pathfinder-error" class="inline-error"></div>
+            <button id="btn-pathfinder" onclick="runPathfinder()" class="btn-primary w-full py-3 flex items-center justify-center gap-2">
+                <span class="material-symbols-outlined text-[18px]">search</span> Find Shortest Path
+            </button>
+        </div>
+
+        <div class="glass-panel p-6 space-y-4">
+            <h3 class="font-semibold flex items-center gap-2">
+                <span class="material-symbols-outlined text-[18px]" style="color:#4d8eff">timeline</span> Result
+            </h3>
+            <div id="pathfinder-result" class="text-sm" style="color:#6b7280">Enter two category IDs and click <em>Find Shortest Path</em>.</div>
+            <div id="path-list" class="font-mono text-sm rounded-lg p-3" style="background:#060e20; min-height:40px;"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────── -->
+<!-- PREDICTOR                                                    -->
+<!-- ─────────────────────────────────────────────────────────── -->
+<div id="section-predictor" class="space-y-5 hidden">
+    <div>
+        <div class="flex items-center gap-3 mb-1">
+            <h2 class="text-3xl font-bold">Purchase Predictor</h2>
+            <span class="tag tag-green">Random Forest</span>
+        </div>
+        <p style="color:#6b7280">Estimates how likely a shopping session is to end in a purchase. Describe what the visitor did during their session and the model returns a probability.</p>
+    </div>
+
+    <div class="info-card">
+        <span class="material-symbols-outlined text-[15px] align-middle mr-1">info</span>
+        The fields below represent a typical visitor's behaviour. The pre-filled values are a realistic example — click <em>Predict</em> to see the result, then try changing the numbers to see how they affect the score.
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div class="glass-panel p-6 space-y-4">
+            <div class="space-y-1">
+                <span class="text-xs font-semibold uppercase tracking-wider" style="color:#6b7280">Quick Personas:</span>
+                <div class="flex flex-wrap gap-2">
+                    <button type="button" onclick="setPredictorPersona(2, 0, 1, 1, 1.5, 0)" class="px-2.5 py-1 text-xs rounded border border-white/10 hover:border-[#4edea3]/50 hover:bg-[#4edea3]/10 transition-colors" style="background:#060e20; color:#dae2fd">Casual Browser</button>
+                    <button type="button" onclick="setPredictorPersona(8, 1, 3, 2, 6.2, 1)" class="px-2.5 py-1 text-xs rounded border border-white/10 hover:border-[#4edea3]/50 hover:bg-[#4edea3]/10 transition-colors" style="background:#060e20; color:#dae2fd">Active Shopper</button>
+                    <button type="button" onclick="setPredictorPersona(25, 5, 10, 4, 28.4, 3)" class="px-2.5 py-1 text-xs rounded border border-white/10 hover:border-[#4edea3]/50 hover:bg-[#4edea3]/10 transition-colors" style="background:#060e20; color:#dae2fd">High-Intent Buyer</button>
+                </div>
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium mb-1">Page Views</label>
+                    <input type="number" id="views" class="input-dark" value="12" min="0">
+                    <p class="hint">Total product pages viewed</p>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-1">Add-to-Cart</label>
+                    <input type="number" id="addtocart" class="input-dark" value="2" min="0">
+                    <p class="hint">Times an item was added to cart</p>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-1">Unique Items</label>
+                    <input type="number" id="unique_items" class="input-dark" value="4" min="0">
+                    <p class="hint">Distinct products browsed</p>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-1">Categories Browsed</label>
+                    <input type="number" id="categories" class="input-dark" value="2" min="0">
+                    <p class="hint">Distinct sections of the store visited</p>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-1">Session Duration</label>
+                    <input type="number" step="0.1" id="duration" class="input-dark" value="8.5" min="0">
+                    <p class="hint">Total time spent shopping (minutes)</p>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-1">Shopper Type</label>
+                    <select id="cluster" class="input-dark">
+                        <option value="0">Casual Browser</option>
+                        <option value="1" selected>Active Shopper</option>
+                        <option value="2">Power User</option>
+                        <option value="3">High-Intent Buyer</option>
+                    </select>
+                    <p class="hint">Best-guess visitor segment</p>
+                </div>
+            </div>
+            <div id="predictor-error" class="inline-error"></div>
+            <button id="btn-predictor" onclick="runPredictor()" class="btn-primary w-full py-3">
+                Predict Purchase Likelihood
+            </button>
+        </div>
+
+        <div class="glass-panel p-6 space-y-5 flex flex-col justify-center text-center">
+            <div>
+                <p class="text-xs uppercase tracking-widest mb-2" style="color:#6b7280">Purchase Probability</p>
+                <div class="text-6xl font-bold" id="prob-value" style="color:#4edea3">--%</div>
+            </div>
+            <div class="h-3 w-full rounded-full overflow-hidden" style="background:#1e293b">
+                <div id="prob-bar" class="h-full rounded-full transition-all duration-700" style="width:0%; background: linear-gradient(90deg,#4d8eff,#4edea3);"></div>
+            </div>
+            <div>
+                <p class="text-sm mb-1" style="color:#6b7280">Risk Label</p>
+                <span id="risk-label" class="text-xl font-bold">--</span>
+            </div>
+            <p class="text-xs" style="color:#4b5563">
+                <strong style="color:#4edea3">Low risk</strong> = session unlikely to convert.<br>
+                <strong style="color:#fbbf24">High risk</strong> = session is likely to end in a purchase.
+            </p>
+        </div>
+    </div>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────── -->
+<!-- BANDIT RECOMMENDER                                          -->
+<!-- ─────────────────────────────────────────────────────────── -->
+<div id="section-bandit" class="space-y-5 hidden">
+    <div>
+        <div class="flex items-center gap-3 mb-1">
+            <h2 class="text-3xl font-bold">Bandit Recommender</h2>
+            <span class="tag tag-amber">LinUCB</span>
+        </div>
+        <p style="color:#6b7280">A self-learning recommendation engine that automatically picks the best strategy — collaborative filtering (KNN) or frequency-based (Random Forest) — based on who's shopping.</p>
+    </div>
+
+    <div class="info-card">
+        <span class="material-symbols-outlined text-[15px] align-middle mr-1">info</span>
+        <strong>Existing session:</strong> look up a real visitor from the dataset. Try Visitor <strong>0</strong>, Session <strong>0</strong> as a starting point, or Visitor <strong>6</strong> with Sessions 0, 1, or 2.<br>
+        <strong>New session:</strong> simulate any visitor by entering their shopping behaviour manually.
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="glass-panel p-6 space-y-4">
+            <!-- Mode toggle -->
+            <div class="flex gap-1 p-1 rounded-xl" style="background:#060e20;">
+                <button id="mode-existing-btn" onclick="setMode('existing')" class="mode-btn mode-btn-active">
+                    Existing Session
+                </button>
+                <button id="mode-new-btn" onclick="setMode('new')" class="mode-btn mode-btn-inactive">
+                    New Session
+                </button>
+            </div>
+
+            <!-- Quick presets container -->
+            <div id="bandit-presets-container" class="space-y-1">
+                <span class="text-xs font-semibold uppercase tracking-wider" style="color:#6b7280">Quick-Select Visitor Samples:</span>
+                <div class="flex flex-wrap gap-2">
+                    <button type="button" onclick="setBanditVisitor(0, 0)" class="px-2.5 py-1 text-xs rounded border border-white/10 hover:border-[#fbbf24]/50 hover:bg-[#fbbf24]/10 transition-colors" style="background:#060e20; color:#dae2fd">Visitor 0 (Session 0)</button>
+                    <button type="button" onclick="setBanditVisitor(6, 0)" class="px-2.5 py-1 text-xs rounded border border-white/10 hover:border-[#fbbf24]/50 hover:bg-[#fbbf24]/10 transition-colors" style="background:#060e20; color:#dae2fd">Visitor 6 (Session 0)</button>
+                    <button type="button" onclick="setBanditVisitor(6, 2)" class="px-2.5 py-1 text-xs rounded border border-white/10 hover:border-[#fbbf24]/50 hover:bg-[#fbbf24]/10 transition-colors" style="background:#060e20; color:#dae2fd">Visitor 6 (Session 2)</button>
+                </div>
+            </div>
+
+            <!-- Existing session fields -->
+            <div id="existing-fields" class="space-y-3">
+                <div>
+                    <label class="block text-sm font-medium mb-1">Visitor ID</label>
+                    <input type="number" id="visitor_id" class="input-dark" value="0" min="0">
+                    <p class="hint">Numeric ID from the RetailRocket dataset — e.g. 0, 1, 2, 6, 7 …</p>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-1">Session ID</label>
+                    <input type="number" id="session_id" class="input-dark" value="0" min="0">
+                    <p class="hint">Session number for this visitor — most have 0; visitor 6 has sessions 0, 1 and 2</p>
+                </div>
+            </div>
+
+            <!-- New session fields -->
+            <div id="new-fields" class="hidden space-y-3">
+                <p class="text-xs" style="color:#6b7280">Describe the visitor's behaviour during their shopping session.</p>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Page Views</label>
+                        <input type="number" id="new_views" class="input-dark" value="10" min="0">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Add-to-Cart</label>
+                        <input type="number" id="new_addtocart" class="input-dark" value="1" min="0">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Unique Items</label>
+                        <input type="number" id="new_unique" class="input-dark" value="3" min="0">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Categories</label>
+                        <input type="number" id="new_categories" class="input-dark" value="2" min="0">
+                    </div>
+                    <div class="col-span-2">
+                        <label class="block text-sm font-medium mb-1">Duration (minutes)</label>
+                        <input type="number" id="new_duration" class="input-dark" value="5.0" min="0" step="0.1">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Strategy -->
+            <div>
+                <label class="block text-sm font-medium mb-1">Recommendation Strategy</label>
+                <select id="arm_choice" class="input-dark">
+                    <option value="auto">Let the Bandit Decide (recommended)</option>
+                    <option value="knn">Force KNN — similarity-based</option>
+                    <option value="rf">Force Random Forest — frequency-based</option>
+                </select>
+                <p class="hint">The bandit learns which arm performs better over time via LinUCB</p>
+            </div>
+
+            <div id="bandit-error" class="inline-error"></div>
+            <button id="btn-bandit" onclick="runBandit()" class="btn-primary w-full py-3">
+                Get Recommendation
+            </button>
+        </div>
+
+        <!-- Result panel -->
+        <div class="glass-panel p-6 space-y-4">
+            <h3 class="font-semibold">Recommendation Result</h3>
+            <div class="stat-box">
+                <p class="text-xs uppercase tracking-widest mb-1" style="color:#6b7280">Strategy Chosen</p>
+                <p id="bandit-arm" class="text-xl font-bold" style="color:#4d8eff">--</p>
+            </div>
+            <div class="stat-box">
+                <p class="text-xs uppercase tracking-widest mb-1" style="color:#6b7280">Recommended Item ID</p>
+                <p id="rec-item" class="text-3xl font-mono font-bold" style="color:#4edea3">--</p>
+            </div>
+            <div class="stat-box">
+                <p class="text-xs uppercase tracking-widest mb-1" style="color:#6b7280">Confidence Score</p>
+                <p id="rec-conf" class="text-xl font-bold" style="color:#fbbf24">--</p>
+            </div>
+            <p id="bandit-note" class="text-xs" style="color:#4b5563"></p>
+        </div>
+    </div>
+</div>
+
+</div>
+</main>
+
 <script>
+    // ── Navigation ──────────────────────────────────────────────
     function showSection(section) {
         document.querySelectorAll('[id^="section-"]').forEach(el => el.classList.add('hidden'));
         document.getElementById(`section-${section}`).classList.remove('hidden');
-        document.querySelectorAll('[id^="nav-"]').forEach(el => el.classList.remove('active-nav'));
-        document.getElementById(`nav-${section}`).classList.add('active-nav');
+        document.querySelectorAll('[id^="nav-"]').forEach(el => {
+            el.classList.remove('active-nav');
+            el.classList.add('hover:bg-white/5');
+        });
+        const nav = document.getElementById(`nav-${section}`);
+        nav.classList.add('active-nav');
+        nav.classList.remove('hover:bg-white/5');
     }
-    const radioExisting = document.querySelector('input[value="existing"]');
-    const radioNew = document.querySelector('input[value="new"]');
-    function toggleSessionMode() { const isExisting = radioExisting.checked; document.getElementById('existing-fields').style.display = isExisting ? 'block' : 'none'; document.getElementById('new-fields').classList.toggle('hidden', isExisting); }
-    radioExisting.addEventListener('change', toggleSessionMode); radioNew.addEventListener('change', toggleSessionMode); toggleSessionMode();
+
+    // ── Interactive Presets & Personas ──────────────────────────
+    function setPathfinderPreset(start, goal) {
+        document.getElementById('start_cat').value = start;
+        document.getElementById('goal_cat').value = goal;
+        runPathfinder();
+    }
+
+    function setPredictorPersona(views, cart, unique, cats, duration, cluster) {
+        document.getElementById('views').value = views;
+        document.getElementById('addtocart').value = cart;
+        document.getElementById('unique_items').value = unique;
+        document.getElementById('categories').value = cats;
+        document.getElementById('duration').value = duration;
+        document.getElementById('cluster').value = cluster;
+        runPredictor();
+    }
+
+    function setBanditVisitor(visitor, session) {
+        setMode('existing');
+        document.getElementById('visitor_id').value = visitor;
+        document.getElementById('session_id').value = session;
+        runBandit();
+    }
+
+    // ── Bandit mode toggle ──────────────────────────────────────
+    function setMode(mode) {
+        const isExisting = mode === 'existing';
+        document.getElementById('existing-fields').classList.toggle('hidden', !isExisting);
+        document.getElementById('new-fields').classList.toggle('hidden', isExisting);
+        document.getElementById('bandit-presets-container').classList.toggle('hidden', !isExisting);
+        document.getElementById('mode-existing-btn').className = 'mode-btn ' + (isExisting ? 'mode-btn-active' : 'mode-btn-inactive');
+        document.getElementById('mode-new-btn').className      = 'mode-btn ' + (!isExisting ? 'mode-btn-active' : 'mode-btn-inactive');
+    }
+
+    // ── Shared helpers ──────────────────────────────────────────
+    async function callAPI(endpoint, data) {
+        const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        return res.json();
+    }
+
+    function setLoading(btnId, loading, label) {
+        const btn = document.getElementById(btnId);
+        btn.disabled = loading;
+        btn.innerHTML = loading ? '<span class="spinner"></span> Working…' : label;
+    }
+
+    function showError(divId, msg) {
+        const el = document.getElementById(divId);
+        el.textContent = '⚠  ' + msg;
+        el.style.display = 'block';
+    }
+
+    function clearError(divId) {
+        const el = document.getElementById(divId);
+        el.style.display = 'none';
+        el.textContent = '';
+    }
+
+    // ── Pathfinder ──────────────────────────────────────────────
     async function runPathfinder() {
-        const start = parseInt(document.getElementById('start_cat').value), goal = parseInt(document.getElementById('goal_cat').value);
-        const res = await callAPI('/api/pathfinder', { start, goal });
-        if (res.error) { document.getElementById('pathfinder-result').innerHTML = `<p class="text-error">Error: ${res.error}</p>`; return; }
-        document.getElementById('pathfinder-result').innerHTML = `<p>Nodes explored: ${res.nodes_explored}</p><p>Path length: ${res.path_length}</p><p>Cost: ${res.cost}</p>`;
-        document.getElementById('path-list').innerHTML = `<div class="space-y-1">${res.path.map((id,i)=>`<div>${i+1}. CAT_${id}</div>`).join('')}</div>`;
+        clearError('pathfinder-error');
+        const label = '<span class="material-symbols-outlined text-[18px]">search</span> Find Shortest Path';
+        setLoading('btn-pathfinder', true, label);
+        const start = parseInt(document.getElementById('start_cat').value);
+        const goal  = parseInt(document.getElementById('goal_cat').value);
+        const res   = await callAPI('/api/pathfinder', { start, goal });
+        setLoading('btn-pathfinder', false, label);
+        if (res.error) {
+            showError('pathfinder-error', res.error);
+            document.getElementById('pathfinder-result').innerHTML = '';
+            document.getElementById('path-list').innerHTML = '';
+            return;
+        }
+        document.getElementById('pathfinder-result').innerHTML =
+            `<div class="grid grid-cols-3 gap-3 text-center">
+                <div class="stat-box"><p class="text-xs" style="color:#6b7280">Hops</p><p class="text-2xl font-bold" style="color:#4d8eff">${res.path_length}</p></div>
+                <div class="stat-box"><p class="text-xs" style="color:#6b7280">Cost</p><p class="text-2xl font-bold" style="color:#4edea3">${res.cost}</p></div>
+                <div class="stat-box"><p class="text-xs" style="color:#6b7280">Nodes Explored</p><p class="text-2xl font-bold" style="color:#fbbf24">${res.nodes_explored}</p></div>
+            </div>`;
+        document.getElementById('path-list').innerHTML =
+            `<p class="text-xs mb-2" style="color:#6b7280">Category sequence:</p>` +
+            res.path.map((id, i) =>
+                `<div class="path-step">
+                    <span style="color:#4b5563; min-width:20px; font-size:0.75rem">${i + 1}.</span>
+                    <span style="color:#4edea3">CAT_${id}</span>
+                    ${i === 0 ? '<span class="tag tag-blue ml-auto">Start</span>' : ''}
+                    ${i === res.path.length - 1 ? '<span class="tag tag-green ml-auto">Goal ✓</span>' : ''}
+                </div>`
+            ).join('');
     }
+
+    // ── Predictor ───────────────────────────────────────────────
     async function runPredictor() {
+        clearError('predictor-error');
+        setLoading('btn-predictor', true, 'Predict Purchase Likelihood');
         const payload = {
-            num_views: parseFloat(document.getElementById('views').value),
-            num_addtocart: parseFloat(document.getElementById('addtocart').value),
-            unique_items: parseFloat(document.getElementById('unique_items').value),
+            num_views:         parseFloat(document.getElementById('views').value),
+            num_addtocart:     parseFloat(document.getElementById('addtocart').value),
+            unique_items:      parseFloat(document.getElementById('unique_items').value),
             categories_viewed: parseFloat(document.getElementById('categories').value),
-            duration_min: parseFloat(document.getElementById('duration').value),
-            cluster: parseFloat(document.getElementById('cluster').value)
+            duration_min:      parseFloat(document.getElementById('duration').value),
+            cluster:           parseFloat(document.getElementById('cluster').value)
         };
         const res = await callAPI('/api/predictor', payload);
-        if (res.error) { alert(res.error); return; }
-        document.getElementById('prob-value').innerHTML = `${res.probability}%`;
-        document.getElementById('prob-bar').style.width = `${res.probability}%`;
-        document.getElementById('risk-label').innerHTML = res.risk_label;
+        setLoading('btn-predictor', false, 'Predict Purchase Likelihood');
+        if (res.error) { showError('predictor-error', res.error); return; }
+        document.getElementById('prob-value').textContent = `${res.probability}%`;
+        document.getElementById('prob-bar').style.width   = `${res.probability}%`;
+        const riskEl = document.getElementById('risk-label');
+        riskEl.textContent = res.risk_label + ' Risk';
+        riskEl.style.color = res.risk_label === 'High' ? '#fbbf24' : '#4edea3';
     }
+
+    // ── Bandit ──────────────────────────────────────────────────
     async function runBandit() {
-        const useExisting = document.querySelector('input[name="session_mode"]:checked').value === 'existing';
-        const forceArm = document.getElementById('arm_choice').value;
-        let payload = { use_existing: useExisting, force_arm: forceArm === 'auto' ? null : forceArm };
-        if (useExisting) {
+        clearError('bandit-error');
+        setLoading('btn-bandit', true, 'Get Recommendation');
+        const isExisting = !document.getElementById('existing-fields').classList.contains('hidden');
+        const forceArm   = document.getElementById('arm_choice').value;
+        let payload = { use_existing: isExisting, force_arm: forceArm === 'auto' ? null : forceArm };
+        if (isExisting) {
             payload.visitor_id = parseInt(document.getElementById('visitor_id').value);
             payload.session_id = parseInt(document.getElementById('session_id').value);
         } else {
-            payload.num_views = parseFloat(document.getElementById('new_views').value);
-            payload.num_addtocart = parseFloat(document.getElementById('new_addtocart').value);
-            payload.unique_items = parseFloat(document.getElementById('new_unique').value);
+            payload.num_views         = parseFloat(document.getElementById('new_views').value);
+            payload.num_addtocart     = parseFloat(document.getElementById('new_addtocart').value);
+            payload.unique_items      = parseFloat(document.getElementById('new_unique').value);
             payload.categories_viewed = parseFloat(document.getElementById('new_categories').value);
-            payload.duration_min = parseFloat(document.getElementById('new_duration').value);
+            payload.duration_min      = parseFloat(document.getElementById('new_duration').value);
         }
         const res = await callAPI('/api/bandit/recommend', payload);
-        if (res.error) { alert(res.error); return; }
-        document.getElementById('bandit-arm').innerHTML = res.arm;
-        document.getElementById('rec-item').innerHTML = res.recommended_item;
-        document.getElementById('rec-conf').innerHTML = (res.confidence * 100).toFixed(1) + '%';
-        document.getElementById('bandit-note').innerHTML = useExisting ? 'Based on session history and bandit decision' : 'New session – using most‑popular item and RF probability.';
+        setLoading('btn-bandit', false, 'Get Recommendation');
+        if (res.error) { showError('bandit-error', res.error); return; }
+        document.getElementById('bandit-arm').textContent = res.arm;
+        document.getElementById('rec-item').textContent   = res.recommended_item;
+        document.getElementById('rec-conf').textContent   = (res.confidence * 100).toFixed(1) + '%';
+        document.getElementById('bandit-note').textContent = isExisting
+            ? `The bandit selected the ${res.arm} arm based on this visitor's context vector and LinUCB confidence bounds.`
+            : 'New session — the globally most-popular item is recommended; confidence = RF purchase probability.';
     }
+
     showSection('pathfinder');
 </script>
 </body>
-</html>
-"""
+</html>"""
 
 @app.route('/')
 def index():
