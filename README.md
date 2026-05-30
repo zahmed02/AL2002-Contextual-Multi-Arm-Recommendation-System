@@ -130,8 +130,8 @@ Two recommendation arms:
 |----------------------|----------|---------|---------------------|------------------|---------------|
 | Random Forest        | 0.9855   | 0.9967  | 0.3498              | 0.9513           | 0.5115        |
 
-- The Random Forest achieves **very high recall** (95.1%): excellent at identifying purchase sessions, at the cost of moderate precision (35%).
-- The ROC‑AUC of 0.9967 indicates outstanding ranking ability.
+- The Random Forest achieves **very high recall** (95.1%): good at identifying purchase sessions, at the cost of moderate precision (35%).
+- The ROC‑AUC of 0.9967 indicates good ranking ability.
 
 ## Tech Stack
 
